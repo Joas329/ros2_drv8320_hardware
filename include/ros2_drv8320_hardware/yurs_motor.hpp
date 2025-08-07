@@ -2,6 +2,7 @@
 #define ROS2_DRV8320_HARDWARE_MOTOR_HPP
 
 #include <thread>
+#include <cmath>
 #include <linux/can.h>
 #include <hardware_interface/actuator_interface.hpp>
 #include <rclcpp/logger.hpp>
@@ -21,12 +22,14 @@ namespace ros2_drv8320_hardware {
 			std::string name;
 
 			double cpr;
+			double input_position_shadow = NAN;
+			double position = NAN;
+			double velocity = 0.0;
+			double last_position = 0.0;
+			rclcpp::Time last_update;
 
-			double output_effort;
-			double output_effort_shadow;
-
-			double input_position;
-			double input_position_shadow;
+			double position_command = 0.0;
+			double velocity_command = 0.0;
 
 			motor_data(std::string name, double cpr);
 		};
