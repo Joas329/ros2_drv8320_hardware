@@ -1,0 +1,4 @@
+<library path="ros2_drv8320_hardware">
+	<class name="ros2_drv8320_hardware/yurs_motor" type="ros2_drv8320_hardware::yurs_motor" base_class_type="hardware_interface::ActuatorInterface">
+	</class>
+</library>
