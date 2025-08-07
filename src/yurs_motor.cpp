@@ -19,6 +19,7 @@ using namespace ros2_drv8320_hardware;
 #define CAN_INDEX_CONTROL_STOP 0
 #define CAN_INDEX_CONTROL_RAW 1
 #define CAN_INDEX_CONTROL_CURRENT 2
+#define CAN_INDEX_CONTROL_POSITION 3
 
 #define CAN_CLASS_TELEM 1
 #define CAN_INDEX_TELEM_VOLTAGE 0
@@ -136,6 +137,20 @@ static void motor_current(can_frame *frame, uint8_t devid, float current) {
 	frame->can_id = ident.can_id() | CAN_EFF_FLAG;
 }
 
+static void motor_position(can_frame *frame, uint8_t devid, float position_rad) {
+	frc_identifier ident;
+	ident.type = CAN_TYPE;
+	ident.manufacturer = CAN_MANUFACTURER;
+	ident.api_class = CAN_CLASS_CONTROL;
+	ident.api_index = CAN_INDEX_CONTROL_POSITION;
+	ident.devid = devid;
+
+	frame->can_id = ident.can_id() | CAN_EFF_FLAG;
+	frame->can_dlc = 4;
+
+	write_buffer(frame->data, position_rad);  // packs the float position into 4 bytes
+}
+
 void yurs_motor::can_connection::write(std::shared_ptr<can_frame> frame) {
 	void *ptr = frame.get();
 
@@ -210,30 +225,28 @@ yurs_motor::CallbackReturn yurs_motor::on_init(const HardwareInfo &hardware_info
 	return CallbackReturn::SUCCESS;
 }
 
-std::vector<yurs_motor::StateInterface> yurs_motor::export_state_interfaces() {
-	std::vector<hardware_interface::StateInterface> interfaces;
+std::vector<hardware_interface::StateInterface> yurs_motor::export_state_interfaces() {
+	std::vector<hardware_interface::StateInterface> state_interfaces;
 
 	for (auto &entry : _joints) {
 		auto &data = entry.second;
-		if (!std::isnan(data.cpr)) {
-			RCLCPP_INFO(this->get_logger(), "Exporting position state interface: %s", data.name.c_str());
-			interfaces.emplace_back(data.name, hardware_interface::HW_IF_POSITION, &data.input_position);
-		}
+		RCLCPP_INFO(this->get_logger(), "Exporting position state interface: %s", data.name.c_str());
+		state_interfaces.emplace_back(hardware_interface::StateInterface(data.name, "position", &data.position));
 	}
 
-	return interfaces;
+	return state_interfaces;
 }
 
 std::vector<yurs_motor::CommandInterface> yurs_motor::export_command_interfaces() {
-	std::vector<hardware_interface::CommandInterface> interfaces;
+	std::vector<hardware_interface::CommandInterface> command_interfaces;
 
 	for (auto &entry : _joints) {
 		auto &data = entry.second;
 		RCLCPP_INFO(this->get_logger(), "Exporting effort command interface: %s", data.name.c_str());
-		interfaces.emplace_back(data.name, hardware_interface::HW_IF_EFFORT, &data.output_effort);
+		command_interfaces.emplace_back(data.name, hardware_interface::HW_IF_POSITION, &data.position_command);
 	}
 
-	return interfaces;
+	return command_interfaces;
 }
 
 yurs_motor::CallbackReturn yurs_motor::on_configure(const State &) {
@@ -252,12 +265,23 @@ yurs_motor::CallbackReturn yurs_motor::on_configure(const State &) {
 	return CallbackReturn::SUCCESS;
 }
 
-yurs_motor::return_type yurs_motor::read(const rclcpp::Time &, const rclcpp::Duration &) {
-	for (auto &entry : _joints) {
-		auto &data = entry.second;
-		data.input_position = data.input_position_shadow;
-	}
-	return return_type::OK;
+hardware_interface::return_type yurs_motor::read(const rclcpp::Time &, const rclcpp::Duration &period) {
+  for (auto &[id, data] : _joints) {
+    // Poll state.enc2.position or retrieve CAN-processed result
+    double current_position;
+
+    // If you're using CAN directly (like the old system):
+    current_position = data.input_position_shadow;
+
+    // Velocity estimation
+    if (!std::isnan(current_position) && !std::isnan(data.position)) {
+      data.velocity = (current_position - data.position) / period.seconds();
+    }
+
+    data.position = current_position;
+  }
+
+  return hardware_interface::return_type::OK;
 }
 
 yurs_motor::return_type yurs_motor::write(const rclcpp::Time &, const rclcpp::Duration &) {
@@ -266,10 +290,10 @@ yurs_motor::return_type yurs_motor::write(const rclcpp::Time &, const rclcpp::Du
 
 	for (auto &entry : _joints) {
 		auto &data = entry.second;
-		data.output_effort_shadow = data.output_effort;
 
+		// Send position command via CAN
 		auto frame = std::make_shared<can_frame>();
-		motor_current(frame.get(), entry.first, data.output_effort_shadow);
+		motor_position(frame.get(), entry.first, data.position_command);  // replace with actual CAN function
 		can_ptr->write(std::move(frame));
 	}
 
